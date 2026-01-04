@@ -1,73 +1,379 @@
-# React + TypeScript + Vite
+# VPoP Agent - 新規事業PMF支援ツール
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+VPoP（Virtual VP of Product）エージェントは、新規事業開発チームがPMF（Product-Market Fit）に到達するまでの探索プロセスを支援するWebアプリケーションです。
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+# 利用者向けガイド
 
-## React Compiler
+## このツールができること
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 1. VPoPエージェントとのAI壁打ち
+GPT-5.2 / GPT-5.2-proを活用したAIエージェントが、VP of Productとして事業推進をサポートします。
+- 現状整理、次のアクション提案
+- 仮説の棚卸しと検証優先度の提案
+- ゲート条件の達成状況確認
+- 壁打ちセッションの準備支援
 
-## Expanding the ESLint configuration
+### 2. 仮説ツリー管理
+「仮説のミルフィーユ」フレームワークに基づき、仮説を階層的に管理します。
+- **Working Mission/Vision**: 暫定のミッション・ビジョンを段階的にコミット
+- **WHY（顧客Why / チームWILL）**: なぜこの事業をやるのか
+- **WHAT**: 何を提供するのか
+- **HOW**: どう実現するのか
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 3. 探索ガードレール
+探索が拡散しすぎないよう、方向性と境界を設定します。
+- 対象領域・対象顧客（仮）の定義
+- 観測したい変化の明確化
+- やらないこと（除外条件）の設定
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### 4. 実験管理
+仮説検証のための実験を計画・実行・振り返りできます。
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 5. CxO AI壁打ち
+CEO/COO/CFO/CSO/CPOの視点でAIと壁打ちできます。各役職の専門的な観点からフィードバックを得られます。
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 6. PRD作成ウィザード
+ステップバイステップでPRD（製品要件定義書）を作成できます。
+
+### 7. 指標（NSM/KPI）管理
+North Star Metricや各種KPIを設定・追跡できます。
+
+---
+
+## 前提となる考え方
+
+### 仮説のミルフィーユ（小城さんのプロダクトマネジメント作法）
+
+新規事業の仮説は「ミルフィーユ」のように層構造になっています：
+
+```
+┌─────────────────────────────────────┐
+│  Working Mission / Vision（暫定）   │  ← 探索しながら固める
+├─────────────────────────────────────┤
+│  WHY - 顧客Why / チームWILL         │  ← なぜやるのか
+├─────────────────────────────────────┤
+│  WHAT - 何を提供するか              │  ← 解決策
+├─────────────────────────────────────┤
+│  HOW - どう実現するか               │  ← 実装方法
+└─────────────────────────────────────┘
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+**重要な原則**:
+- 上位の仮説が変わると、下位の仮説も見直しが必要
+- 初期段階では「Working（暫定）」として扱い、証拠が揃ってからコミット
+- Mission/Visionは最初から固定せず、Draft → Supported → Committed と段階的に確定
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### AlphaDrive 7ステージゲート
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+新規事業は7つのステージを経て成長します。各ステージにはゲート条件（退出条件）があります。
+
+| ステージ | 名称 | 目的 |
+|---------|------|------|
+| WILL/ENTRY | アイデア創出 | WILLの明文化、初期仮説の設定 |
+| MVP1 | 顧客/課題実証 | 課題の存在確認、対象顧客の特定 |
+| MVP2 | ソリューション実証 | 課題解決の検証、事業計画ドラフト |
+| SEED | 商売成立 | 初期受注、グロースドライバー発見 |
+| ALPHA | 拡大加速 | 成長施策の実行 |
+| BETA | 持続的拡大 | ガバナンス構築 |
+| EXIT | 部門化/会社化 | 独立運営 |
+
+---
+
+## ツールを使ったプロセス
+
+### Phase 1: 探索の準備（WILL/ENTRY）
+
+1. **事業案を作成** - サイドバーから「新規事業案を作成」
+2. **探索ガードレールを設定** - 仮説ツリーページで対象領域・顧客・除外条件を定義
+3. **Working Mission/Visionを設定** - 暫定のミッション・ビジョンをDraftとして登録
+
+### Phase 2: 顧客/課題探索（MVP1）
+
+1. **VPoPエージェントと壁打ち** - 課題仮説を議論
+2. **WHY仮説を登録** - 顧客Whyタブに困りごと・代替手段を記録
+3. **実験を計画・実行** - 顧客インタビュー等を計画
+4. **CxO壁打ち** - CEO/CPO視点でレビュー
+
+### Phase 3: ソリューション検証（MVP2）
+
+1. **WHAT/HOW仮説を追加** - ソリューション仮説を登録
+2. **Working Mission/Visionの更新** - 証拠に基づきSupportedへ昇格
+3. **PRD作成** - ウィザードで製品要件を整理
+4. **指標設定** - NSM/KPIを定義
+
+### Phase 4: 事業化（SEED〜）
+
+1. **Working Mission/Visionをコミット** - 確定版として固定
+2. **ステージゲート確認** - ダッシュボードで達成状況を確認
+3. **意思決定ログを残す** - CxO壁打ちセッションで議論・記録
+
+---
+
+## 各機能の使い方
+
+### VPoPエージェント
+
+1. サイドバーで事業案を選択
+2. 「VPoPエージェント」ページを開く
+3. クイックアクションボタンまたは自由入力で質問
+4. 会話から「データ作成」で仮説・実験・指標などを生成
+5. 「メモを作る」で会話の要点を保存
+
+**利用可能なクイックアクション**:
+- 現状を整理
+- 次のアクション
+- 未検証仮説の棚卸し
+- ゲート条件確認
+- 壁打ち準備
+
+### 仮説ツリー
+
+1. 「仮説ツリー」ページを開く
+2. **探索ガードレール**（上部）で探索の境界を設定
+3. **Working Mission/Vision**でミッション・ビジョンを管理
+4. **WHYタブ**（顧客Why / チームWILL）で動機を整理
+5. **WHAT/HOW**で解決策・実装を管理
+6. 各仮説には根拠（Evidence）を追加可能
+
+### CxO AI壁打ち
+
+1. 「壁打ちセッション」ページを開く
+2. 「新規セッション」で相手役（CEO/COO/CFO/CSO/CPO）を選択
+3. 議題・目的を設定
+4. 「AI壁打ち」ボタンでAIと対話
+5. 結論・Nextアクションを記録
+
+### PRD作成
+
+1. 「PRD」ページを開く
+2. 「新規PRD作成」をクリック
+3. ウィザードに従って入力（Working Mission/Visionから自動入力可能）
+4. 機能一覧をMoSCoW優先度で整理
+
+---
+
+## 初期セットアップ
+
+### 必要な環境
+- Node.js 20以上
+- npm
+
+### セットアップ手順
+
+```bash
+# 1. リポジトリをクローン
+git clone <repository-url>
+cd cc
+
+# 2. 依存関係をインストール
+npm install
+
+# 3. 環境変数を設定
+cp .env.sample .env
+# .envファイルを編集してOpenAI APIキーを設定
+# VITE_OPENAI_API_KEY=your_openai_api_key
+
+# 4. 開発サーバーを起動
+npm run dev
 ```
+
+### 起動確認
+
+- フロントエンド: http://localhost:5174
+- APIサーバー: http://localhost:3001/api
+
+---
+
+# メンテナ向けガイド
+
+## 技術スタック
+
+| カテゴリ | 技術 | バージョン |
+|---------|------|----------|
+| フロントエンド | React | ^19.2.0 |
+| 言語 | TypeScript | ~5.9.3 |
+| ビルドツール | Vite | ^7.2.4 |
+| スタイリング | Tailwind CSS | ^4.1.18 |
+| 状態管理 | Zustand | ^5.0.9 |
+| ルーティング | React Router DOM | ^7.11.0 |
+| AIインテグレーション | OpenAI Responses API | GPT-5.2 / GPT-5.2-pro |
+| バックエンド | Express.js | ^4.21.2 |
+| アイコン | Lucide React | ^0.562.0 |
+| ユーティリティ | date-fns, uuid | ^4.1.0, ^13.0.0 |
+
+## システム構成
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       Browser                                │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              React SPA (Vite)                        │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌──────────────┐  │   │
+│  │  │   Pages    │  │ Components │  │    Store     │  │   │
+│  │  │            │  │  (common)  │  │  (Zustand)   │  │   │
+│  │  └────────────┘  └────────────┘  └──────────────┘  │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+          │                                      │
+          │ HTTP (REST API)                      │ HTTPS
+          ▼                                      ▼
+┌─────────────────────┐              ┌─────────────────────┐
+│   Express Server    │              │   OpenAI API        │
+│   (port 3001)       │              │  (GPT-5.2/5.2-pro)  │
+│   ┌─────────────┐   │              └─────────────────────┘
+│   │   Storage   │   │
+│   │ (store.json)│   │
+│   └─────────────┘   │
+└─────────────────────┘
+```
+
+### データ永続化
+- クライアント側: Zustandのpersistミドルウェア（localStorage）
+- サーバー側: JSONファイル（data/store.json）
+- 起動時にサーバーからデータをロードし、変更時に自動保存
+
+## データ構造
+
+### 主要エンティティ
+
+| エンティティ | 説明 |
+|------------|------|
+| `Project` | 事業案。ステージ、ガードレール、M/Vへの参照を持つ |
+| `ExplorationGuardrail` | 探索の境界設定（対象領域、顧客、除外条件） |
+| `WorkingMissionVision` | 暫定Mission/Vision（コミットレベル付き） |
+| `Hypothesis` | 仮説（WHY/WHAT/HOWレベル） |
+| `Experiment` | 実験（仮説検証用） |
+| `Session` | CxO壁打ちセッション |
+| `Metric` | 指標（NSM/KPI） |
+| `PRD` | 製品要件定義書 |
+| `AgentChatSession` | VPoPチャットセッション |
+| `AgentMemo` | チャットから抽出したメモ |
+
+### 型定義の場所
+すべての型定義は `src/types/index.ts` に集約されています。
+
+## フォルダ構成
+
+```
+cc/
+├── .env.sample          # 環境変数サンプル
+├── package.json         # 依存関係・スクリプト
+├── vite.config.ts       # Vite設定
+├── tsconfig*.json       # TypeScript設定
+├── index.html           # エントリHTML
+│
+├── server/              # バックエンドサーバー
+│   ├── index.ts         # Expressサーバー起動
+│   ├── routes/
+│   │   └── api.ts       # REST APIエンドポイント
+│   └── services/
+│       └── storage.ts   # JSONファイルストレージ
+│
+├── src/                 # フロントエンド
+│   ├── main.tsx         # Reactエントリポイント
+│   ├── App.tsx          # ルーティング設定
+│   ├── index.css        # グローバルスタイル
+│   │
+│   ├── components/
+│   │   └── common/      # 共通UIコンポーネント
+│   │       ├── Badge.tsx
+│   │       ├── Button.tsx
+│   │       ├── Card.tsx
+│   │       ├── Input.tsx
+│   │       ├── Layout.tsx
+│   │       ├── Modal.tsx
+│   │       ├── Select.tsx
+│   │       ├── Tabs.tsx
+│   │       └── TextArea.tsx
+│   │
+│   ├── pages/           # ページコンポーネント
+│   │   ├── Dashboard.tsx    # ダッシュボード
+│   │   ├── Hypotheses.tsx   # 仮説ツリー
+│   │   ├── Agent.tsx        # VPoPエージェント
+│   │   ├── Sessions.tsx     # CxO壁打ち
+│   │   ├── Experiments.tsx  # 実験管理
+│   │   ├── Metrics.tsx      # 指標管理
+│   │   ├── PRD.tsx          # PRD作成
+│   │   ├── Documents.tsx    # 成果物一覧
+│   │   ├── Memos.tsx        # メモ一覧
+│   │   ├── NewProject.tsx   # 新規事業案作成
+│   │   └── Settings.tsx     # 設定
+│   │
+│   ├── store/           # 状態管理
+│   │   ├── index.ts     # Zustandストア（全CRUD操作）
+│   │   └── api.ts       # API通信・データ同期
+│   │
+│   ├── types/
+│   │   └── index.ts     # 型定義
+│   │
+│   ├── utils/
+│   │   └── openai.ts    # OpenAI API連携
+│   │
+│   └── hooks/
+│       └── useInitialize.ts  # 初期化フック
+│
+└── data/                # データ保存（gitignore）
+    └── store.json       # 永続化データ
+```
+
+## 各機能の仕様
+
+### VPoPエージェント（Agent.tsx）
+- **システムプロンプト**: `src/utils/openai.ts` の `buildSystemPrompt()`
+- **機能**: チャット、メモ生成、データ生成（仮説/実験/PRD/指標/Working M/V/ガードレール）
+- **モデル設定**: gpt-5.2 / gpt-5.2-pro から選択可能、Reasoning Effort調整可能
+
+### 仮説ツリー（Hypotheses.tsx）
+- **構成**: 探索ガードレール → Working M/V → WHY（タブ切替） → WHAT → HOW
+- **コミットレベル**: Draft / Supported / Committed
+- **確定済みM/V編集時**: 警告ダイアログ表示
+
+### CxO壁打ち（Sessions.tsx）
+- **役職別プロンプト**: `src/utils/openai.ts` の `buildCxOSystemPrompt()`
+- **対応役職**: CEO, COO, CFO, CSO, CPO
+- **メモ連携**: 壁打ち結果をAgentMemoとして保存可能
+
+### PRDウィザード（PRD.tsx）
+- **ステップ**: Core → Why → What → Validation
+- **Working M/V連携**: Step 1で自動入力、未コミット時は警告表示
+
+### 指標管理（Metrics.tsx）
+- **指標タイプ**: NSM（North Star Metric）、KPI、OKR
+- **履歴**: 値の変更履歴を記録
+
+### データ同期（store/api.ts）
+- **初期ロード**: サーバーからデータ取得
+- **自動保存**: debounce付きで変更を自動保存（1秒待機）
+- **エラーハンドリング**: 保存失敗時はリトライ
+
+---
+
+## 開発コマンド
+
+```bash
+# 開発サーバー起動（フロント+バック同時）
+npm run dev
+
+# フロントエンドのみ
+npm run dev:client
+
+# バックエンドのみ
+npm run dev:server
+
+# ビルド
+npm run build
+
+# Lint
+npm run lint
+
+# プレビュー（ビルド後）
+npm run preview
+```
+
+---
+
+## ライセンス
+
+Private
