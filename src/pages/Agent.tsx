@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Sparkles, Lightbulb, FileText, Target, Users, RefreshCw, AlertCircle, Settings, StickyNote, X, Check, Loader2, BookOpen, Trash2, ChevronRight, Pencil, Plus, FlaskConical, BarChart3, FileDown, ChevronDown, MessageSquare, MessageCirclePlus } from 'lucide-react';
+import { Send, Bot, User, Sparkles, Lightbulb, FileText, Target, Users, RefreshCw, AlertCircle, Settings, StickyNote, X, Check, Loader2, BookOpen, Trash2, ChevronRight, Pencil, Plus, FlaskConical, BarChart3, FileDown, ChevronDown, MessageSquare, MessageCirclePlus, Copy } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import { Card, Button, Badge } from '../components/common';
 import { useStore } from '../store';
 import {
@@ -7,6 +8,8 @@ import {
   isOpenAIConfigured,
   generateMemoFromConversation,
   generateDataFromConversation,
+  createConversation,
+  initializeConversation,
   type GPT52Model,
   type ReasoningEffort,
   type GeneratedMemo,
@@ -107,6 +110,9 @@ export function Agent() {
   const [showSessionPanel, setShowSessionPanel] = useState(false);
   const [editingSessionTitle, setEditingSessionTitle] = useState<string | null>(null);
   const [sessionTitleInput, setSessionTitleInput] = useState('');
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [showMemoFocusModal, setShowMemoFocusModal] = useState(false);
+  const [memoFocusInstruction, setMemoFocusInstruction] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const dataMenuRef = useRef<HTMLDivElement>(null);
 
@@ -127,6 +133,16 @@ export function Agent() {
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleCopyMessage = async (messageId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageId(messageId);
+      setTimeout(() => setCopiedMessageId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy message:', err);
+    }
   };
 
   useEffect(() => {
@@ -188,8 +204,11 @@ export function Agent() {
 
     // セッションがない場合は自動作成
     let sessionId = currentChatSessionId;
+    let session = currentChatSession;
     if (!sessionId) {
       sessionId = createChatSession(currentProjectId, `会話 ${new Date().toLocaleString('ja-JP')}`);
+      // 新しく作成されたセッションを取得
+      session = agentChatSessions.find((s) => s.id === sessionId) || null;
     }
 
     addAgentMessage({
@@ -201,27 +220,41 @@ export function Agent() {
     setIsTyping(true);
 
     try {
-      // Build conversation history for context (current session only)
-      const conversationHistory = currentSessionMessages.map((msg) => ({
-        role: msg.role === 'user' ? 'user' as const : 'assistant' as const,
-        content: msg.content,
-      }));
+      const projectContext = {
+        project: currentProject!,
+        hypotheses,
+        experiments,
+        sessions,
+        metrics,
+        prds,
+        memos: projectMemos,
+      };
 
+      // OpenAI Conversation IDを取得または作成
+      let conversationId = session?.openaiConversationId;
+
+      if (!conversationId) {
+        // 新しいConversationを作成
+        conversationId = await createConversation();
+        // セッションにConversation IDを保存
+        updateChatSession(sessionId, { openaiConversationId: conversationId });
+        // コンテキストを初期化（システムプロンプトを設定）
+        await initializeConversation(conversationId, projectContext, {
+          model: selectedModel,
+          reasoningEffort,
+        });
+      }
+
+      // Conversations APIを使用してチャット
+      // モデルとreasoning effortは毎回指定可能（途中で変更可能）
       const response = await chatWithVPoP(
         userMessage,
-        {
-          project: currentProject!,
-          hypotheses,
-          experiments,
-          sessions,
-          metrics,
-          prds,
-          memos: projectMemos,
-        },
-        conversationHistory,
+        projectContext,
+        [], // Conversations API使用時は履歴不要
         {
           model: selectedModel,
           reasoningEffort,
+          conversationId,
         }
       );
 
@@ -256,10 +289,18 @@ export function Agent() {
     setInput(action.prompt);
   };
 
+  // メモフォーカス入力モーダルを開く
+  const openMemoFocusModal = () => {
+    if (currentSessionMessages.length === 0 || !currentProjectId) return;
+    setMemoFocusInstruction('');
+    setShowMemoFocusModal(true);
+  };
+
   // メモ生成ハンドラー
   const handleGenerateMemo = async () => {
     if (currentSessionMessages.length === 0 || !currentProjectId) return;
 
+    setShowMemoFocusModal(false);
     setIsGeneratingMemo(true);
     setError(null);
 
@@ -267,7 +308,8 @@ export function Agent() {
       const memo = await generateMemoFromConversation(
         currentSessionMessages,
         currentProject!.name,
-        { model: selectedModel, reasoningEffort }
+        { model: selectedModel, reasoningEffort },
+        memoFocusInstruction.trim() || undefined
       );
       setGeneratedMemo(memo);
       setEditableMemo(memo);
@@ -277,6 +319,7 @@ export function Agent() {
       setError(errorMessage);
     } finally {
       setIsGeneratingMemo(false);
+      setMemoFocusInstruction('');
     }
   };
 
@@ -567,7 +610,7 @@ export function Agent() {
   }, []);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-200px)]">
+    <div className="flex flex-col h-[calc(100vh-60px)]">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">VPoP エージェント</h1>
@@ -626,7 +669,7 @@ export function Agent() {
           <Button
             variant="secondary"
             size="sm"
-            onClick={handleGenerateMemo}
+            onClick={openMemoFocusModal}
             disabled={!apiConfigured || currentSessionMessages.length === 0 || isGeneratingMemo}
           >
             {isGeneratingMemo ? (
@@ -1020,7 +1063,7 @@ export function Agent() {
           {currentSessionMessages.map((message) => (
             <div
               key={message.id}
-              className={`flex gap-3 ${
+              className={`group flex gap-3 ${
                 message.role === 'user' ? 'flex-row-reverse' : ''
               }`}
             >
@@ -1037,65 +1080,47 @@ export function Agent() {
                   <Bot className="w-5 h-5 text-purple-600" />
                 )}
               </div>
-              <div
-                className={`max-w-[80%] rounded-lg p-3 ${
-                  message.role === 'user'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-gray-100 text-gray-900'
-                }`}
-              >
-                {message.role === 'agent' ? (
-                  <div className="prose prose-sm max-w-none">
-                    {message.content.split('\n').map((line, i) => {
-                      if (line.startsWith('## ')) {
-                        return (
-                          <h3 key={i} className="text-lg font-bold mt-2 mb-1">
-                            {line.replace('## ', '')}
-                          </h3>
-                        );
-                      }
-                      if (line.startsWith('### ')) {
-                        return (
-                          <h4 key={i} className="text-md font-semibold mt-2 mb-1">
-                            {line.replace('### ', '')}
-                          </h4>
-                        );
-                      }
-                      if (line.startsWith('- ')) {
-                        return (
-                          <div key={i} className="ml-4">
-                            {line}
-                          </div>
-                        );
-                      }
-                      if (line.startsWith('*') && line.endsWith('*')) {
-                        return (
-                          <p key={i} className="text-sm text-gray-600 italic mt-2">
-                            {line.replace(/\*/g, '')}
-                          </p>
-                        );
-                      }
-                      if (line === '---') {
-                        return <hr key={i} className="my-2" />;
-                      }
-                      return line ? <p key={i}>{line}</p> : <br key={i} />;
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                )}
-                {message.sources && message.sources.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-gray-200">
-                    <div className="flex items-center gap-1 text-xs text-gray-500">
-                      <span>出所:</span>
-                      {message.sources.map((source) => (
-                        <Badge key={source.id} size="sm">
-                          {source.type === 'inference' ? source.title : source.title}
-                        </Badge>
-                      ))}
+              <div className="flex flex-col gap-1 max-w-[80%]">
+                <div
+                  className={`rounded-lg p-3 ${
+                    message.role === 'user'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 text-gray-900'
+                  }`}
+                >
+                  {message.role === 'agent' ? (
+                    <div className="prose prose-sm max-w-none prose-headings:mt-3 prose-headings:mb-2 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:bg-gray-800 prose-pre:text-gray-100 prose-code:bg-gray-200 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:before:content-none prose-code:after:content-none">
+                      <ReactMarkdown>{message.content}</ReactMarkdown>
                     </div>
-                  </div>
-                )}
+                  ) : (
+                    <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                  )}
+                  {message.sources && message.sources.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-200">
+                      <div className="flex items-center gap-1 text-xs text-gray-500">
+                        <span>出所:</span>
+                        {message.sources.map((source) => (
+                          <Badge key={source.id} size="sm">
+                            {source.type === 'inference' ? source.title : source.title}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => handleCopyMessage(message.id, message.content)}
+                  className={`opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-gray-200 ${
+                    message.role === 'user' ? 'self-end' : 'self-start'
+                  }`}
+                  title="コピー"
+                >
+                  {copiedMessageId === message.id ? (
+                    <Check className="w-4 h-4 text-green-500" />
+                  ) : (
+                    <Copy className="w-4 h-4 text-gray-400" />
+                  )}
+                </button>
               </div>
             </div>
           ))}
@@ -1130,22 +1155,86 @@ export function Agent() {
               e.preventDefault();
               handleSend();
             }}
-            className="flex gap-2"
+            className="flex gap-2 items-end"
           >
-            <input
-              type="text"
+            <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={apiConfigured ? "質問を入力..." : "APIキーを設定してください"}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  if (input.trim() && !isTyping && apiConfigured) {
+                    handleSend();
+                  }
+                }
+              }}
+              placeholder={apiConfigured ? "質問を入力... (⌘+Enterで送信)" : "APIキーを設定してください"}
               disabled={!apiConfigured}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+              rows={1}
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed resize-none min-h-[42px] max-h-[102px] overflow-y-auto"
+              style={{
+                height: 'auto',
+                minHeight: '42px',
+              }}
+              onInput={(e) => {
+                const target = e.target as HTMLTextAreaElement;
+                target.style.height = 'auto';
+                const newHeight = Math.min(target.scrollHeight, 102);
+                target.style.height = `${newHeight}px`;
+              }}
             />
-            <Button type="submit" disabled={!input.trim() || isTyping || !apiConfigured}>
+            <Button type="submit" disabled={!input.trim() || isTyping || !apiConfigured} className="h-[42px]">
               <Send className="w-4 h-4" />
             </Button>
           </form>
         </div>
       </Card>
+
+      {/* Memo Focus Modal */}
+      {showMemoFocusModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-lg w-full">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h2 className="text-lg font-semibold">メモの作成</h2>
+              <button
+                onClick={() => setShowMemoFocusModal(false)}
+                className="p-1 hover:bg-gray-100 rounded"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  フォーカス指示（任意）
+                </label>
+                <textarea
+                  value={memoFocusInstruction}
+                  onChange={(e) => setMemoFocusInstruction(e.target.value)}
+                  placeholder="例）顧客課題に関する議論を中心に、次のアクションを重点的に"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  rows={3}
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  会話の中で特に注目したい観点を指示できます。空欄の場合は会話全体から自動で抽出します。
+                </p>
+              </div>
+              <div className="flex justify-end gap-3">
+                <Button
+                  variant="secondary"
+                  onClick={() => setShowMemoFocusModal(false)}
+                >
+                  キャンセル
+                </Button>
+                <Button onClick={handleGenerateMemo}>
+                  <StickyNote className="w-4 h-4 mr-2" />
+                  生成する
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Memo Modal */}
       {showMemoModal && editableMemo && (

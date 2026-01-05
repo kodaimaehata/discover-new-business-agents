@@ -36,6 +36,7 @@ export function Sessions() {
   const {
     currentProjectId,
     projects,
+    agentMemos,
     getProjectSessions,
     getProjectHypotheses,
     getProjectExperiments,
@@ -66,6 +67,8 @@ export function Sessions() {
   const [isGeneratingMemo, setIsGeneratingMemo] = useState(false);
   const [showMemoModal, setShowMemoModal] = useState(false);
   const [editableMemo, setEditableMemo] = useState<GeneratedMemo | null>(null);
+  const [showMemoFocusModal, setShowMemoFocusModal] = useState(false);
+  const [memoFocusInstruction, setMemoFocusInstruction] = useState('');
 
   const [formData, setFormData] = useState({
     role: 'CEO' as SessionRole,
@@ -161,6 +164,7 @@ export function Sessions() {
       const allSessions = getProjectSessions(currentProjectId!);
       const metrics = getProjectMetrics(currentProjectId!);
       const prds = getProjectPRDs(currentProjectId!);
+      const projectMemos = agentMemos.filter(m => m.projectId === currentProjectId);
 
       const context = {
         project: currentProject,
@@ -169,6 +173,7 @@ export function Sessions() {
         sessions: allSessions,
         metrics,
         prds,
+        memos: projectMemos,
         currentSession: selectedSession,
       };
 
@@ -198,10 +203,18 @@ export function Sessions() {
     }
   };
 
+  // メモフォーカス入力モーダルを開く
+  const openMemoFocusModal = () => {
+    if (!selectedSession || !currentProject || !selectedSession.chatMessages?.length) return;
+    setMemoFocusInstruction('');
+    setShowMemoFocusModal(true);
+  };
+
   // CxO会話からメモを生成
   const handleGenerateMemo = async () => {
     if (!selectedSession || !currentProject || !selectedSession.chatMessages?.length) return;
 
+    setShowMemoFocusModal(false);
     setIsGeneratingMemo(true);
     setChatError(null);
 
@@ -217,7 +230,9 @@ export function Sessions() {
 
       const memo = await generateMemoFromConversation(
         messagesForMemo,
-        `${currentProject.name} - ${selectedSession.role}壁打ち`
+        `${currentProject.name} - ${selectedSession.role}壁打ち`,
+        undefined,
+        memoFocusInstruction.trim() || undefined
       );
 
       setEditableMemo(memo);
@@ -226,6 +241,7 @@ export function Sessions() {
       setChatError(error instanceof Error ? error.message : 'メモ生成中にエラーが発生しました');
     } finally {
       setIsGeneratingMemo(false);
+      setMemoFocusInstruction('');
     }
   };
 
@@ -680,7 +696,7 @@ export function Sessions() {
                       </Button>
                       <Button
                         variant="secondary"
-                        onClick={handleGenerateMemo}
+                        onClick={openMemoFocusModal}
                         disabled={!selectedSession.chatMessages?.length || isGeneratingMemo || isChatLoading}
                         title="会話からメモを生成"
                       >
@@ -843,6 +859,42 @@ export function Sessions() {
             </TabsContent>
           </Tabs>
         )}
+      </Modal>
+
+      {/* メモフォーカス入力モーダル */}
+      <Modal
+        isOpen={showMemoFocusModal}
+        onClose={() => setShowMemoFocusModal(false)}
+        title="メモの作成"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              フォーカス指示（任意）
+            </label>
+            <TextArea
+              value={memoFocusInstruction}
+              onChange={(e) => setMemoFocusInstruction(e.target.value)}
+              placeholder="例）顧客課題に関する議論を中心に、次のアクションを重点的に"
+              rows={3}
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              会話の中で特に注目したい観点を指示できます。空欄の場合は会話全体から自動で抽出します。
+            </p>
+          </div>
+          <div className="flex justify-end gap-3">
+            <Button
+              variant="secondary"
+              onClick={() => setShowMemoFocusModal(false)}
+            >
+              キャンセル
+            </Button>
+            <Button onClick={handleGenerateMemo}>
+              <StickyNote className="w-4 h-4 mr-2" />
+              生成する
+            </Button>
+          </div>
+        </div>
       </Modal>
 
       {/* メモ編集モーダル */}

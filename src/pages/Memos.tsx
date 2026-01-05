@@ -12,7 +12,10 @@ import {
   Calendar,
   ChevronRight,
   X,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
+import { generateMemoFromText, isOpenAIConfigured, type GeneratedMemo } from '../utils/openai';
 import {
   Card,
   Button,
@@ -35,6 +38,7 @@ const SOURCE_TYPE_LABELS: Record<MemoSourceType, { label: string; icon: typeof M
 export function Memos() {
   const {
     currentProjectId,
+    projects,
     agentMemos,
     agentChatSessions,
     sessions,
@@ -43,6 +47,8 @@ export function Memos() {
     updateAgentMemo,
     deleteAgentMemo,
   } = useStore();
+
+  const currentProject = projects.find((p) => p.id === currentProjectId);
 
   const projectMemos = currentProjectId
     ? agentMemos.filter((m) => m.projectId === currentProjectId)
@@ -60,6 +66,13 @@ export function Memos() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedMemo, setSelectedMemo] = useState<AgentMemo | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+
+  // テキストから生成モーダル状態
+  const [showTextInputModal, setShowTextInputModal] = useState(false);
+  const [sourceText, setSourceText] = useState('');
+  const [textFocusInstruction, setTextFocusInstruction] = useState('');
+  const [isGeneratingFromText, setIsGeneratingFromText] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   // 編集フォーム
   const [formData, setFormData] = useState({
@@ -147,6 +160,7 @@ export function Memos() {
       relatedHypothesisIds: memo.relatedHypothesisIds || [],
     });
     setSelectedMemo(memo);
+    setIsDetailOpen(false);
     setIsModalOpen(true);
   };
 
@@ -190,6 +204,49 @@ export function Memos() {
   const openDetail = (memo: AgentMemo) => {
     setSelectedMemo(memo);
     setIsDetailOpen(true);
+  };
+
+  // テキストから生成モーダルを開く
+  const openTextInputModal = () => {
+    setSourceText('');
+    setTextFocusInstruction('');
+    setGenerationError(null);
+    setShowTextInputModal(true);
+  };
+
+  // テキストからメモを生成
+  const handleGenerateFromText = async () => {
+    if (!sourceText.trim() || !currentProject) return;
+
+    setIsGeneratingFromText(true);
+    setGenerationError(null);
+
+    try {
+      const memo = await generateMemoFromText(
+        sourceText.trim(),
+        currentProject.name,
+        undefined,
+        textFocusInstruction.trim() || undefined
+      );
+
+      // 生成されたメモをフォームにセット
+      setFormData({
+        title: memo.title,
+        summary: memo.summary,
+        keyPoints: memo.keyPoints.length > 0 ? memo.keyPoints : [''],
+        decisions: memo.decisions.length > 0 ? memo.decisions : [''],
+        nextActions: memo.nextActions.length > 0 ? memo.nextActions : [''],
+        tags: [''],
+        relatedHypothesisIds: [],
+      });
+      setSelectedMemo(null);
+      setShowTextInputModal(false);
+      setIsModalOpen(true);
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'メモの生成に失敗しました');
+    } finally {
+      setIsGeneratingFromText(false);
+    }
   };
 
   const getSourceLabel = (memo: AgentMemo) => {
@@ -241,10 +298,21 @@ export function Memos() {
             会話やセッションから抽出した重要な情報を管理
           </p>
         </div>
-        <Button onClick={openCreateModal}>
-          <Plus className="w-4 h-4 mr-2" />
-          メモを作成
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={openCreateModal}>
+            <Plus className="w-4 h-4 mr-2" />
+            メモを作成
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={openTextInputModal}
+            disabled={!isOpenAIConfigured()}
+            title={!isOpenAIConfigured() ? 'OpenAI APIキーが設定されていません' : undefined}
+          >
+            <Sparkles className="w-4 h-4 mr-2" />
+            テキストから生成
+          </Button>
+        </div>
       </div>
 
       {/* フィルター */}
@@ -378,10 +446,20 @@ export function Memos() {
                 : 'VPoPエージェントやCxO壁打ちから会話をメモに保存、または手動でメモを作成してください'}
             </p>
             {!searchQuery && sourceTypeFilter === 'all' && !tagFilter && (
-              <Button onClick={openCreateModal}>
-                <Plus className="w-4 h-4 mr-2" />
-                メモを作成
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={openCreateModal}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  メモを作成
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={openTextInputModal}
+                  disabled={!isOpenAIConfigured()}
+                >
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  テキストから生成
+                </Button>
+              </div>
             )}
           </div>
         </Card>
@@ -449,6 +527,75 @@ export function Memos() {
           })}
         </div>
       )}
+
+      {/* テキストから生成モーダル */}
+      <Modal
+        isOpen={showTextInputModal}
+        onClose={() => setShowTextInputModal(false)}
+        title="テキストからメモを生成"
+        size="xl"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              ソーステキスト
+            </label>
+            <TextArea
+              value={sourceText}
+              onChange={(e) => setSourceText(e.target.value)}
+              placeholder="メモの元となるテキストを入力してください（会議メモ、議事録、ヒアリング内容など）"
+              rows={8}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              フォーカス指示（任意）
+            </label>
+            <TextArea
+              value={textFocusInstruction}
+              onChange={(e) => setTextFocusInstruction(e.target.value)}
+              placeholder="例）顧客課題に関する内容を中心に、次のアクションを重点的に抽出"
+              rows={2}
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              特に注目したい観点を指示できます。空欄の場合はテキスト全体から自動で抽出します。
+            </p>
+          </div>
+
+          {generationError && (
+            <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg">
+              {generationError}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-4 border-t">
+            <Button
+              variant="secondary"
+              onClick={() => setShowTextInputModal(false)}
+              disabled={isGeneratingFromText}
+            >
+              キャンセル
+            </Button>
+            <Button
+              onClick={handleGenerateFromText}
+              disabled={!sourceText.trim() || isGeneratingFromText}
+            >
+              {isGeneratingFromText ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  生成中...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  生成する
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* 作成/編集モーダル */}
       <Modal

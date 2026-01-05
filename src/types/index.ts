@@ -468,6 +468,7 @@ export interface AgentChatSession {
   title: string;
   createdAt: string;
   updatedAt: string;
+  openaiConversationId?: string; // OpenAI Conversations APIのID
 }
 
 // メモのソースタイプ

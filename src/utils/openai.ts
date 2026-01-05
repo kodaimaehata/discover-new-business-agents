@@ -11,7 +11,7 @@ export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | '
 
 // 各モデルで利用可能なreasoning effortレベル
 export const MODEL_REASONING_OPTIONS: Record<GPT52Model, ReasoningEffort[]> = {
-  'gpt-5.2': ['none', 'minimal', 'low', 'medium', 'high'],
+  'gpt-5.2': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
   'gpt-5.2-pro': ['medium', 'high', 'xhigh'],
 };
 
@@ -152,12 +152,65 @@ ${memo.nextActions.length > 0 ? `- 次のアクション：\n${memo.nextActions.
 export interface ChatOptions {
   model: GPT52Model;
   reasoningEffort: ReasoningEffort;
+  conversationId?: string; // OpenAI Conversations APIのID
 }
 
 export const DEFAULT_CHAT_OPTIONS: ChatOptions = {
   model: 'gpt-5.2',
   reasoningEffort: 'medium',
 };
+
+// OpenAI Conversations APIで新しい会話を作成
+export async function createConversation(): Promise<string> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI APIキーが設定されていません。');
+  }
+
+  const response = await fetch('https://api.openai.com/v1/conversations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({}),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || 'Conversation作成に失敗しました');
+  }
+
+  const data = await response.json();
+  return data.id;
+}
+
+// 会話を初期化（システムプロンプトを設定）
+export async function initializeConversation(
+  conversationId: string,
+  context: ProjectContext,
+  options: ChatOptions = DEFAULT_CHAT_OPTIONS
+): Promise<void> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI APIキーが設定されていません。');
+  }
+
+  const systemPrompt = buildSystemPrompt(context);
+
+  // developerメッセージを会話に追加
+  await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: options.model,
+      conversation: conversationId,
+      input: [{ role: 'developer', content: systemPrompt }],
+      reasoning: { effort: options.reasoningEffort },
+    }),
+  });
+}
 
 export async function chatWithVPoP(
   userMessage: string,
@@ -169,20 +222,42 @@ export async function chatWithVPoP(
     throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
   }
 
-  const systemPrompt = buildSystemPrompt(context);
-
-  // Responses API形式でinputを構築
-  // GPT-5.2ではsystemロールの代わりにdeveloperロールを使用
-  const input: ChatMessage[] = [
-    { role: 'developer', content: systemPrompt },
-    ...conversationHistory.map(msg => ({
-      role: msg.role === 'system' ? 'developer' as const : msg.role,
-      content: msg.content,
-    })),
-    { role: 'user', content: userMessage },
-  ];
-
   try {
+    let requestBody: Record<string, unknown>;
+
+    if (options.conversationId) {
+      // Conversations APIを使用する場合
+      // 会話の状態はOpenAI側で管理されているため、userメッセージのみ送信
+      // モデルとreasoning effortは毎回指定可能（途中で変更可能）
+      requestBody = {
+        model: options.model,
+        conversation: options.conversationId,
+        input: [{ role: 'user', content: userMessage }],
+        reasoning: {
+          effort: options.reasoningEffort,
+        },
+      };
+    } else {
+      // 従来の方式：毎回履歴を送信
+      const systemPrompt = buildSystemPrompt(context);
+      const input: ChatMessage[] = [
+        { role: 'developer', content: systemPrompt },
+        ...conversationHistory.map(msg => ({
+          role: msg.role === 'system' ? 'developer' as const : msg.role,
+          content: msg.content,
+        })),
+        { role: 'user', content: userMessage },
+      ];
+
+      requestBody = {
+        model: options.model,
+        input,
+        reasoning: {
+          effort: options.reasoningEffort,
+        },
+      };
+    }
+
     // GPT-5.2 Responses API
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
@@ -190,13 +265,7 @@ export async function chatWithVPoP(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${OPENAI_API_KEY}`,
       },
-      body: JSON.stringify({
-        model: options.model,
-        input,
-        reasoning: {
-          effort: options.reasoningEffort,
-        },
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -252,7 +321,8 @@ export interface GeneratedMemo {
 export async function generateMemoFromConversation(
   messages: AgentMessage[],
   projectName: string,
-  options: ChatOptions = DEFAULT_CHAT_OPTIONS
+  options: ChatOptions = DEFAULT_CHAT_OPTIONS,
+  focusInstruction?: string
 ): Promise<GeneratedMemo> {
   if (!isOpenAIConfigured()) {
     throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
@@ -265,7 +335,12 @@ export async function generateMemoFromConversation(
   const memoPrompt = `以下のVPoPエージェントとユーザーの会話を分析し、今後のエージェントが参照するためのメモを作成してください。
 
 ## 対象事業案: ${projectName}
+${focusInstruction ? `
+## フォーカス指示:
+${focusInstruction}
 
+上記の指示に従って、特に指定された観点を中心にメモを作成してください。
+` : ''}
 ## 会話内容:
 ${conversationText}
 
@@ -337,6 +412,119 @@ ${conversationText}
 
     // JSONをパース
     // コードブロックで囲まれている場合は除去
+    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, responseText];
+    const jsonText = jsonMatch[1] || responseText;
+
+    try {
+      const memo = JSON.parse(jsonText.trim()) as GeneratedMemo;
+      return {
+        title: memo.title || '無題のメモ',
+        summary: memo.summary || '',
+        keyPoints: Array.isArray(memo.keyPoints) ? memo.keyPoints : [],
+        decisions: Array.isArray(memo.decisions) ? memo.decisions : [],
+        nextActions: Array.isArray(memo.nextActions) ? memo.nextActions : [],
+      };
+    } catch {
+      throw new Error('メモのJSON解析に失敗しました');
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('メモ生成中にエラーが発生しました');
+  }
+}
+
+// テキストからメモを生成
+export async function generateMemoFromText(
+  text: string,
+  projectName: string,
+  options: ChatOptions = DEFAULT_CHAT_OPTIONS,
+  focusInstruction?: string
+): Promise<GeneratedMemo> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
+  }
+
+  const memoPrompt = `以下のテキストを分析し、今後のエージェントが参照するためのメモを作成してください。
+
+## 対象事業案: ${projectName}
+${focusInstruction ? `
+## フォーカス指示:
+${focusInstruction}
+
+上記の指示に従って、特に指定された観点を中心にメモを作成してください。
+` : ''}
+## 入力テキスト:
+${text}
+
+## 出力形式（必ずJSON形式で出力してください）:
+{
+  "title": "メモのタイトル（20文字以内で内容を端的に表現）",
+  "summary": "テキストの要約（100-200文字程度）",
+  "keyPoints": ["重要なポイント1", "重要なポイント2", ...],
+  "decisions": ["決定事項1", "決定事項2", ...],
+  "nextActions": ["次のアクション1", "次のアクション2", ...]
+}
+
+## 注意事項:
+- keyPoints: テキストから読み取れる重要な洞察や発見（0-5個）
+- decisions: テキスト中で言及されている決定事項や合意事項（0-5個）
+- nextActions: テキストから導かれる今後実行すべきアクション（0-5個）
+- 配列が空の場合は空配列[]としてください
+- JSON以外のテキストは出力しないでください`;
+
+  const input: ChatMessage[] = [
+    { role: 'developer', content: 'あなたはテキストを分析し、構造化されたメモを作成するアシスタントです。必ずJSON形式で出力してください。' },
+    { role: 'user', content: memoPrompt },
+  ];
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: options.model,
+        input,
+        reasoning: {
+          effort: options.reasoningEffort,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error?.message || 'OpenAI APIエラーが発生しました');
+    }
+
+    const data = await response.json();
+
+    // レスポンスからテキストを取得
+    let responseText = '';
+    if (data.output_text) {
+      responseText = data.output_text;
+    } else if (data.output && Array.isArray(data.output)) {
+      const lastOutput = data.output.find((o: { type: string }) => o.type === 'message');
+      if (lastOutput?.content) {
+        if (Array.isArray(lastOutput.content)) {
+          const textContent = lastOutput.content.find((c: { type: string }) => c.type === 'output_text');
+          if (textContent?.text) {
+            responseText = textContent.text;
+          }
+        } else if (typeof lastOutput.content === 'string') {
+          responseText = lastOutput.content;
+        }
+      }
+    }
+
+    if (!responseText) {
+      throw new Error('メモの生成に失敗しました');
+    }
+
+    // JSONをパース
     const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, responseText];
     const jsonText = jsonMatch[1] || responseText;
 
@@ -671,12 +859,13 @@ interface CxOContext {
   sessions: Session[];
   metrics: Metric[];
   prds: PRD[];
+  memos: AgentMemo[];
   currentSession: Session;
 }
 
 // CxO役割別のシステムプロンプトを生成
 function buildCxOSystemPrompt(role: SessionRole, context: CxOContext): string {
-  const { project, hypotheses, experiments, sessions, metrics, prds, currentSession } = context;
+  const { project, hypotheses, experiments, sessions, metrics, prds, memos, currentSession } = context;
   const roleConfig = SESSION_ROLES.find(r => r.id === role);
 
   // 仮説の状況を整理
@@ -824,6 +1013,15 @@ ${pastSessions.map(s => `
 - 目的：${s.objective}
 ${s.conclusion ? `- 結論：${s.conclusion}` : ''}
 ${s.counterArguments ? `- 指摘事項：${s.counterArguments}` : ''}
+`).join('\n')}` : ''}
+
+${memos.length > 0 ? `### 過去の会話メモ（重要なコンテキスト）
+${memos.map(memo => `
+#### ${memo.title}
+- 要約：${memo.summary}
+${memo.keyPoints.length > 0 ? `- 重要なポイント：\n${memo.keyPoints.map(p => `  - ${p}`).join('\n')}` : ''}
+${memo.decisions.length > 0 ? `- 決定事項：\n${memo.decisions.map(d => `  - ${d}`).join('\n')}` : ''}
+${memo.nextActions.length > 0 ? `- 次のアクション：\n${memo.nextActions.map(a => `  - ${a}`).join('\n')}` : ''}
 `).join('\n')}` : ''}
 
 ## 回答の指針
