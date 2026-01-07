@@ -44,14 +44,131 @@ export function isOpenAIConfigured(): boolean {
   return !!OPENAI_API_KEY && OPENAI_API_KEY !== 'your-api-key-here';
 }
 
+// ===== 共通ヘルパー関数 =====
+
+interface ResponsesApiRequest {
+  model: GPT52Model;
+  input: ChatMessage[];
+  reasoningEffort: ReasoningEffort;
+  conversationId?: string;
+}
+
+interface ResponsesApiResponse {
+  output_text?: string;
+  output?: Array<{
+    type: string;
+    content?: string | Array<{ type: string; text?: string }>;
+  }>;
+}
+
+// OpenAI Responses APIを呼び出す共通関数
+async function callResponsesApi(request: ResponsesApiRequest): Promise<ResponsesApiResponse> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
+  }
+
+  const body: Record<string, unknown> = {
+    model: request.model,
+    input: request.input,
+    reasoning: { effort: request.reasoningEffort },
+    tools: [{ type: 'web_search' }],
+  };
+
+  if (request.conversationId) {
+    body.conversation = request.conversationId;
+  }
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    let errorMessage = 'OpenAI APIエラーが発生しました';
+    try {
+      const error = await response.json();
+      errorMessage = error.error?.message || errorMessage;
+    } catch {
+      // JSON parse error is ignored
+    }
+    throw new Error(errorMessage);
+  }
+
+  return response.json();
+}
+
+// レスポンスからテキストを抽出する共通関数
+function extractOutputText(data: ResponsesApiResponse): string {
+  // output_textフィールドから取得
+  if (data.output_text) {
+    return data.output_text;
+  }
+
+  // output配列から最後のmessageを取得
+  if (data.output && Array.isArray(data.output)) {
+    const lastOutput = data.output.find((o) => o.type === 'message');
+    if (lastOutput?.content) {
+      // contentが配列の場合
+      if (Array.isArray(lastOutput.content)) {
+        const textContent = lastOutput.content.find((c) => c.type === 'output_text');
+        if (textContent?.text) {
+          return textContent.text;
+        }
+      }
+      // contentが文字列の場合
+      if (typeof lastOutput.content === 'string') {
+        return lastOutput.content;
+      }
+    }
+  }
+
+  return '';
+}
+
+// JSONをパースする共通関数（コードブロック対応）
+function parseJsonFromResponse(responseText: string): unknown {
+  // コードブロックで囲まれている場合は除去
+  const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, responseText];
+  const jsonText = jsonMatch[1] || responseText;
+  return JSON.parse(jsonText.trim());
+}
+
+// コンテキスト選別の上限設定
+const CONTEXT_LIMITS = {
+  memos: 3,             // メモは最新3件
+  unverifiedHypotheses: 5,  // 未検証仮説は最新5件
+  activeExperiments: 5, // 進行中実験は最新5件
+  pastSessions: 2,      // 過去セッションは最新2件
+};
+
 function buildSystemPrompt(context: ProjectContext): string {
   const { project, hypotheses, experiments, sessions, metrics, prds, memos } = context;
 
-  const unverifiedHypotheses = hypotheses.filter(h => h.status === 'unverified');
-  const activeExperiments = experiments.filter(e => e.status === 'in_progress');
+  // コンテキスト選別：未検証仮説は最新5件まで
+  const unverifiedHypotheses = hypotheses
+    .filter(h => h.status === 'unverified')
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, CONTEXT_LIMITS.unverifiedHypotheses);
+  const totalUnverified = hypotheses.filter(h => h.status === 'unverified').length;
+
+  // コンテキスト選別：進行中実験は最新5件まで
+  const activeExperiments = experiments
+    .filter(e => e.status === 'in_progress')
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, CONTEXT_LIMITS.activeExperiments);
+
   const upcomingSessions = sessions.filter(s => s.status === 'scheduled');
   const nsmMetric = metrics.find(m => m.type === 'NSM');
   const prd = prds[0];
+
+  // コンテキスト選別：メモは最新3件まで（更新日時順）
+  const recentMemos = [...memos]
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, CONTEXT_LIMITS.memos);
 
   return `あなたは「VP of Product（VPoP）エージェント」です。新規事業のPMF達成までを支援する進行管理者として振る舞います。
 
@@ -100,10 +217,10 @@ function buildSystemPrompt(context: ProjectContext): string {
 - Why（WILL）：${hypotheses.filter(h => h.level === 'WHY' && h.whySubType === 'will').length}件
 - What：${hypotheses.filter(h => h.level === 'WHAT').length}件
 - How：${hypotheses.filter(h => h.level === 'HOW').length}件
-- 未検証：${unverifiedHypotheses.length}件
+- 未検証：${totalUnverified}件
 - 検証済：${hypotheses.filter(h => h.status === 'validated').length}件
 
-${unverifiedHypotheses.length > 0 ? `### 未検証仮説
+${unverifiedHypotheses.length > 0 ? `### 未検証仮説${totalUnverified > CONTEXT_LIMITS.unverifiedHypotheses ? `（最新${CONTEXT_LIMITS.unverifiedHypotheses}件を表示）` : ''}
 ${unverifiedHypotheses.map(h => `- [${h.level}${h.whySubType ? `/${h.whySubType}` : ''}] ${h.title}`).join('\n')}` : ''}
 
 ### 実験の状況
@@ -131,8 +248,8 @@ ${prd ? `### PRD
 - Problem：${prd.why.problem}
 - Solution：${prd.what.solution}` : '### PRD：未作成'}
 
-${memos.length > 0 ? `### 過去の会話メモ（重要なコンテキスト）
-${memos.map(memo => `
+${recentMemos.length > 0 ? `### 過去の会話メモ${memos.length > CONTEXT_LIMITS.memos ? `（最新${CONTEXT_LIMITS.memos}件/${memos.length}件を表示）` : ''}
+${recentMemos.map(memo => `
 #### ${memo.title}
 - 要約：${memo.summary}
 ${memo.keyPoints.length > 0 ? `- 重要なポイント：\n${memo.keyPoints.map(p => `  - ${p}`).join('\n')}` : ''}
@@ -197,7 +314,7 @@ export async function initializeConversation(
   const systemPrompt = buildSystemPrompt(context);
 
   // developerメッセージを会話に追加
-  await fetch('https://api.openai.com/v1/responses', {
+  const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -210,6 +327,17 @@ export async function initializeConversation(
       reasoning: { effort: options.reasoningEffort },
     }),
   });
+
+  if (!response.ok) {
+    let errorMessage = 'Conversation初期化に失敗しました';
+    try {
+      const error = await response.json();
+      errorMessage = error.error?.message || errorMessage;
+    } catch {
+      // JSON parse error is ignored
+    }
+    throw new Error(errorMessage);
+  }
 }
 
 export async function chatWithVPoP(
@@ -218,29 +346,17 @@ export async function chatWithVPoP(
   conversationHistory: ChatMessage[] = [],
   options: ChatOptions = DEFAULT_CHAT_OPTIONS
 ): Promise<string> {
-  if (!isOpenAIConfigured()) {
-    throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
-  }
-
   try {
-    let requestBody: Record<string, unknown>;
+    let input: ChatMessage[];
 
     if (options.conversationId) {
       // Conversations APIを使用する場合
       // 会話の状態はOpenAI側で管理されているため、userメッセージのみ送信
-      // モデルとreasoning effortは毎回指定可能（途中で変更可能）
-      requestBody = {
-        model: options.model,
-        conversation: options.conversationId,
-        input: [{ role: 'user', content: userMessage }],
-        reasoning: {
-          effort: options.reasoningEffort,
-        },
-      };
+      input = [{ role: 'user', content: userMessage }];
     } else {
       // 従来の方式：毎回履歴を送信
       const systemPrompt = buildSystemPrompt(context);
-      const input: ChatMessage[] = [
+      input = [
         { role: 'developer', content: systemPrompt },
         ...conversationHistory.map(msg => ({
           role: msg.role === 'system' ? 'developer' as const : msg.role,
@@ -248,58 +364,17 @@ export async function chatWithVPoP(
         })),
         { role: 'user', content: userMessage },
       ];
-
-      requestBody = {
-        model: options.model,
-        input,
-        reasoning: {
-          effort: options.reasoningEffort,
-        },
-      };
     }
 
-    // GPT-5.2 Responses API
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify(requestBody),
+    const data = await callResponsesApi({
+      model: options.model,
+      input,
+      reasoningEffort: options.reasoningEffort,
+      conversationId: options.conversationId,
     });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'OpenAI APIエラーが発生しました');
-    }
-
-    const data = await response.json();
-
-    // Responses APIのレスポンス形式から出力を取得
-    // output_textフィールドまたはoutput配列から取得
-    if (data.output_text) {
-      return data.output_text;
-    }
-
-    // output配列から最後のmessageを取得
-    if (data.output && Array.isArray(data.output)) {
-      const lastOutput = data.output.find((o: { type: string }) => o.type === 'message');
-      if (lastOutput?.content) {
-        // contentが配列の場合
-        if (Array.isArray(lastOutput.content)) {
-          const textContent = lastOutput.content.find((c: { type: string }) => c.type === 'output_text');
-          if (textContent?.text) {
-            return textContent.text;
-          }
-        }
-        // contentが文字列の場合
-        if (typeof lastOutput.content === 'string') {
-          return lastOutput.content;
-        }
-      }
-    }
-
-    return '応答を生成できませんでした。';
+    const outputText = extractOutputText(data);
+    return outputText || '応答を生成できませんでした。';
   } catch (error) {
     if (error instanceof Error) {
       throw error;
@@ -317,6 +392,22 @@ export interface GeneratedMemo {
   nextActions: string[];
 }
 
+// メモのJSONをパース・検証する共通関数
+function parseMemoJson(responseText: string): GeneratedMemo {
+  try {
+    const parsed = parseJsonFromResponse(responseText) as GeneratedMemo;
+    return {
+      title: parsed.title || '無題のメモ',
+      summary: parsed.summary || '',
+      keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints : [],
+      decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
+      nextActions: Array.isArray(parsed.nextActions) ? parsed.nextActions : [],
+    };
+  } catch {
+    throw new Error('メモのJSON解析に失敗しました');
+  }
+}
+
 // 会話からメモを生成
 export async function generateMemoFromConversation(
   messages: AgentMessage[],
@@ -324,10 +415,6 @@ export async function generateMemoFromConversation(
   options: ChatOptions = DEFAULT_CHAT_OPTIONS,
   focusInstruction?: string
 ): Promise<GeneratedMemo> {
-  if (!isOpenAIConfigured()) {
-    throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
-  }
-
   const conversationText = messages
     .map(m => `${m.role === 'user' ? 'ユーザー' : 'エージェント'}: ${m.content}`)
     .join('\n\n');
@@ -366,67 +453,18 @@ ${conversationText}
   ];
 
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: options.model,
-        input,
-        reasoning: {
-          effort: options.reasoningEffort,
-        },
-      }),
+    const data = await callResponsesApi({
+      model: options.model,
+      input,
+      reasoningEffort: options.reasoningEffort,
     });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'OpenAI APIエラーが発生しました');
-    }
-
-    const data = await response.json();
-
-    // レスポンスからテキストを取得
-    let responseText = '';
-    if (data.output_text) {
-      responseText = data.output_text;
-    } else if (data.output && Array.isArray(data.output)) {
-      const lastOutput = data.output.find((o: { type: string }) => o.type === 'message');
-      if (lastOutput?.content) {
-        if (Array.isArray(lastOutput.content)) {
-          const textContent = lastOutput.content.find((c: { type: string }) => c.type === 'output_text');
-          if (textContent?.text) {
-            responseText = textContent.text;
-          }
-        } else if (typeof lastOutput.content === 'string') {
-          responseText = lastOutput.content;
-        }
-      }
-    }
-
+    const responseText = extractOutputText(data);
     if (!responseText) {
       throw new Error('メモの生成に失敗しました');
     }
 
-    // JSONをパース
-    // コードブロックで囲まれている場合は除去
-    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, responseText];
-    const jsonText = jsonMatch[1] || responseText;
-
-    try {
-      const memo = JSON.parse(jsonText.trim()) as GeneratedMemo;
-      return {
-        title: memo.title || '無題のメモ',
-        summary: memo.summary || '',
-        keyPoints: Array.isArray(memo.keyPoints) ? memo.keyPoints : [],
-        decisions: Array.isArray(memo.decisions) ? memo.decisions : [],
-        nextActions: Array.isArray(memo.nextActions) ? memo.nextActions : [],
-      };
-    } catch {
-      throw new Error('メモのJSON解析に失敗しました');
-    }
+    return parseMemoJson(responseText);
   } catch (error) {
     if (error instanceof Error) {
       throw error;
@@ -442,10 +480,6 @@ export async function generateMemoFromText(
   options: ChatOptions = DEFAULT_CHAT_OPTIONS,
   focusInstruction?: string
 ): Promise<GeneratedMemo> {
-  if (!isOpenAIConfigured()) {
-    throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
-  }
-
   const memoPrompt = `以下のテキストを分析し、今後のエージェントが参照するためのメモを作成してください。
 
 ## 対象事業案: ${projectName}
@@ -480,66 +514,18 @@ ${text}
   ];
 
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: options.model,
-        input,
-        reasoning: {
-          effort: options.reasoningEffort,
-        },
-      }),
+    const data = await callResponsesApi({
+      model: options.model,
+      input,
+      reasoningEffort: options.reasoningEffort,
     });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'OpenAI APIエラーが発生しました');
-    }
-
-    const data = await response.json();
-
-    // レスポンスからテキストを取得
-    let responseText = '';
-    if (data.output_text) {
-      responseText = data.output_text;
-    } else if (data.output && Array.isArray(data.output)) {
-      const lastOutput = data.output.find((o: { type: string }) => o.type === 'message');
-      if (lastOutput?.content) {
-        if (Array.isArray(lastOutput.content)) {
-          const textContent = lastOutput.content.find((c: { type: string }) => c.type === 'output_text');
-          if (textContent?.text) {
-            responseText = textContent.text;
-          }
-        } else if (typeof lastOutput.content === 'string') {
-          responseText = lastOutput.content;
-        }
-      }
-    }
-
+    const responseText = extractOutputText(data);
     if (!responseText) {
       throw new Error('メモの生成に失敗しました');
     }
 
-    // JSONをパース
-    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, responseText];
-    const jsonText = jsonMatch[1] || responseText;
-
-    try {
-      const memo = JSON.parse(jsonText.trim()) as GeneratedMemo;
-      return {
-        title: memo.title || '無題のメモ',
-        summary: memo.summary || '',
-        keyPoints: Array.isArray(memo.keyPoints) ? memo.keyPoints : [],
-        decisions: Array.isArray(memo.decisions) ? memo.decisions : [],
-        nextActions: Array.isArray(memo.nextActions) ? memo.nextActions : [],
-      };
-    } catch {
-      throw new Error('メモのJSON解析に失敗しました');
-    }
+    return parseMemoJson(responseText);
   } catch (error) {
     if (error instanceof Error) {
       throw error;
@@ -796,53 +782,18 @@ ${conversationText}
   ];
 
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: options.model,
-        input,
-        reasoning: {
-          effort: options.reasoningEffort,
-        },
-      }),
+    const data = await callResponsesApi({
+      model: options.model,
+      input,
+      reasoningEffort: options.reasoningEffort,
     });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'OpenAI APIエラーが発生しました');
-    }
-
-    const data = await response.json();
-
-    let responseText = '';
-    if (data.output_text) {
-      responseText = data.output_text;
-    } else if (data.output && Array.isArray(data.output)) {
-      const lastOutput = data.output.find((o: { type: string }) => o.type === 'message');
-      if (lastOutput?.content) {
-        if (Array.isArray(lastOutput.content)) {
-          const textContent = lastOutput.content.find((c: { type: string }) => c.type === 'output_text');
-          if (textContent?.text) {
-            responseText = textContent.text;
-          }
-        } else if (typeof lastOutput.content === 'string') {
-          responseText = lastOutput.content;
-        }
-      }
-    }
-
+    const responseText = extractOutputText(data);
     if (!responseText) {
       throw new Error('データの生成に失敗しました');
     }
 
-    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, responseText];
-    const jsonText = jsonMatch[1] || responseText;
-
-    return JSON.parse(jsonText.trim());
+    return parseJsonFromResponse(responseText);
   } catch (error) {
     if (error instanceof Error) {
       throw error;
@@ -880,12 +831,20 @@ function buildCxOSystemPrompt(role: SessionRole, context: CxOContext): string {
   const completedExperiments = experiments.filter(e => e.status === 'completed');
   const activeExperiments = experiments.filter(e => e.status === 'in_progress');
 
-  // 過去のセッション（このCxOとのやりとり）
-  const pastSessions = sessions.filter(s => s.role === role && s.status === 'completed' && s.id !== currentSession.id);
+  // 過去のセッション（このCxOとのやりとり）：コンテキスト選別で最新2件まで
+  const allPastSessions = sessions.filter(s => s.role === role && s.status === 'completed' && s.id !== currentSession.id);
+  const pastSessions = allPastSessions
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, CONTEXT_LIMITS.pastSessions);
 
   // PRD情報
   const prd = prds[0];
   const nsmMetric = metrics.find(m => m.type === 'NSM');
+
+  // コンテキスト選別：メモは最新3件まで
+  const recentMemos = [...memos]
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, CONTEXT_LIMITS.memos);
 
   // 役割別の専門的視点
   const roleSpecificContext: Record<SessionRole, string> = {
@@ -1007,7 +966,7 @@ ${prd ? `### PRD情報
 - 目的：${currentSession.objective}
 ${currentSession.constraints ? `- 前提・制約：${currentSession.constraints}` : ''}
 
-${pastSessions.length > 0 ? `### 過去の${role}壁打ちセッション
+${pastSessions.length > 0 ? `### 過去の${role}壁打ちセッション${allPastSessions.length > CONTEXT_LIMITS.pastSessions ? `（最新${CONTEXT_LIMITS.pastSessions}件/${allPastSessions.length}件を表示）` : ''}
 ${pastSessions.map(s => `
 #### ${s.title}（${s.completedDate || '日付不明'}）
 - 目的：${s.objective}
@@ -1015,8 +974,8 @@ ${s.conclusion ? `- 結論：${s.conclusion}` : ''}
 ${s.counterArguments ? `- 指摘事項：${s.counterArguments}` : ''}
 `).join('\n')}` : ''}
 
-${memos.length > 0 ? `### 過去の会話メモ（重要なコンテキスト）
-${memos.map(memo => `
+${recentMemos.length > 0 ? `### 過去の会話メモ${memos.length > CONTEXT_LIMITS.memos ? `（最新${CONTEXT_LIMITS.memos}件/${memos.length}件を表示）` : ''}
+${recentMemos.map(memo => `
 #### ${memo.title}
 - 要約：${memo.summary}
 ${memo.keyPoints.length > 0 ? `- 重要なポイント：\n${memo.keyPoints.map(p => `  - ${p}`).join('\n')}` : ''}
@@ -1043,10 +1002,6 @@ export async function chatWithCxO(
   conversationHistory: SessionChatMessage[] = [],
   options: ChatOptions = DEFAULT_CHAT_OPTIONS
 ): Promise<string> {
-  if (!isOpenAIConfigured()) {
-    throw new Error('OpenAI APIキーが設定されていません。.envファイルにVITE_OPENAI_API_KEYを設定してください。');
-  }
-
   const systemPrompt = buildCxOSystemPrompt(role, context);
 
   // 会話履歴を構築
@@ -1062,49 +1017,14 @@ export async function chatWithCxO(
   ];
 
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: options.model,
-        input,
-        reasoning: {
-          effort: options.reasoningEffort,
-        },
-      }),
+    const data = await callResponsesApi({
+      model: options.model,
+      input,
+      reasoningEffort: options.reasoningEffort,
     });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'OpenAI APIエラーが発生しました');
-    }
-
-    const data = await response.json();
-
-    // レスポンスからテキストを取得
-    if (data.output_text) {
-      return data.output_text;
-    }
-
-    if (data.output && Array.isArray(data.output)) {
-      const lastOutput = data.output.find((o: { type: string }) => o.type === 'message');
-      if (lastOutput?.content) {
-        if (Array.isArray(lastOutput.content)) {
-          const textContent = lastOutput.content.find((c: { type: string }) => c.type === 'output_text');
-          if (textContent?.text) {
-            return textContent.text;
-          }
-        }
-        if (typeof lastOutput.content === 'string') {
-          return lastOutput.content;
-        }
-      }
-    }
-
-    return '応答を生成できませんでした。';
+    const outputText = extractOutputText(data);
+    return outputText || '応答を生成できませんでした。';
   } catch (error) {
     if (error instanceof Error) {
       throw error;

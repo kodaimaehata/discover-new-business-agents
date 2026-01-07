@@ -660,6 +660,10 @@ export const useStore = create<AppState>()(
     clearSessionMessages: (sessionId) => {
       set((state) => ({
         agentMessages: state.agentMessages.filter((m) => m.sessionId !== sessionId),
+        // OpenAI側のConversation状態も破棄（次回送信で新規Conversation作成）
+        agentChatSessions: state.agentChatSessions.map((s) =>
+          s.id === sessionId ? { ...s, openaiConversationId: undefined, updatedAt: now() } : s
+        ),
       }));
     },
 
