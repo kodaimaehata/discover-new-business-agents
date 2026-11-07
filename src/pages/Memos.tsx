@@ -15,7 +15,7 @@ import {
   Sparkles,
   Loader2,
 } from 'lucide-react';
-import { generateMemoFromText, isOpenAIConfigured, type GeneratedMemo } from '../utils/openai';
+import { generateMemoFromText, isOpenAIConfigured } from '../utils/openai';
 import {
   Card,
   Button,

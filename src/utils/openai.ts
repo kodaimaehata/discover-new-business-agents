@@ -793,7 +793,7 @@ ${conversationText}
       throw new Error('データの生成に失敗しました');
     }
 
-    return parseJsonFromResponse(responseText);
+    return parseJsonFromResponse(responseText) as Awaited<ReturnType<typeof generateDataFromConversation>>;
   } catch (error) {
     if (error instanceof Error) {
       throw error;
